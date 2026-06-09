@@ -19,12 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-The `novnc-patched/` directory contains a vendored and locally patched copy of
-noVNC (https://github.com/novnc/noVNC), Copyright (C) The noVNC Authors,
-distributed under the Mozilla Public License 2.0 (MPL-2.0). That code remains
-under its original license; see the file headers in `novnc-patched/` and the
-upstream project for the full license text. Local patches add macOS
-Command/Super-to-Control key mapping for the broker's web viewer.
