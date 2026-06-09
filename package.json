@@ -1,0 +1,19 @@
+{
+  "name": "vnc-session-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Control plane for dual-entry VNC desktops (web noVNC + native macOS Screen Sharing) with one-time tokens, connection-duration quota, and per-session Chrome launch/network profiles.",
+  "license": "MIT",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "smoke": "node scripts/smoke-test.mjs",
+    "web:install": "npm --prefix web install",
+    "web:build": "npm --prefix web run build",
+    "web:dev": "npm --prefix web run dev"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

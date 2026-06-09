@@ -1,0 +1,47 @@
+{
+  "default": {
+    "quotaSeconds": 3600,
+    "maxConnections": 1,
+    "launchProfile": {
+      "id": "chrome-url",
+      "url": "about:blank"
+    },
+    "networkProfile": {
+      "id": "none"
+    }
+  },
+  "users": {
+    "A": {
+      "launchProfile": {
+        "id": "chrome-url",
+        "url": "https://example.com/"
+      },
+      "networkProfile": {
+        "id": "header-proxy",
+        "headers": {
+          "x-example-header": "1"
+        },
+        "proxyMappings": [
+          {
+            "from": "app.example.com/app",
+            "to": "localhost:4000/app",
+            "preserveHost": true
+          }
+        ]
+      }
+    },
+    "oc_debug": {
+      "quotaSeconds": 3600,
+      "maxConnections": 1,
+      "launchProfile": {
+        "id": "chrome-url",
+        "url": "about:blank"
+      },
+      "networkProfile": {
+        "id": "none",
+        "headers": {},
+        "proxyMappings": []
+      }
+    }
+  }
+}

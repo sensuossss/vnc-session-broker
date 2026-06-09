@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>2K VNC Resolution Check</title>
+    <style>
+      :root {
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #172026;
+        background:
+          linear-gradient(rgba(16, 88, 135, .14) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(16, 88, 135, .14) 1px, transparent 1px),
+          #f7fafb;
+        background-size: 80px 80px;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+
+      .stage {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+      }
+
+      header {
+        padding: 28px 36px;
+        background: #ffffff;
+        border-bottom: 1px solid #d8e2e7;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 32px;
+        letter-spacing: 0;
+      }
+
+      .subtitle {
+        margin: 8px 0 0;
+        color: #50626e;
+        font-size: 16px;
+      }
+
+      main {
+        display: grid;
+        grid-template-columns: 1fr 360px;
+        gap: 20px;
+        padding: 24px 36px;
+      }
+
+      .canvas {
+        min-height: 760px;
+        border: 2px solid #185a7d;
+        border-radius: 8px;
+        background:
+          linear-gradient(135deg, rgba(11, 107, 203, .16), transparent 42%),
+          linear-gradient(rgba(225, 95, 32, .12) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(225, 95, 32, .12) 1px, transparent 1px),
+          #fff;
+        background-size: auto, 40px 40px, 40px 40px, auto;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .mark {
+        position: absolute;
+        padding: 8px 10px;
+        border-radius: 6px;
+        background: #172026;
+        color: #fff;
+        font-weight: 800;
+      }
+
+      .tl { left: 16px; top: 16px; }
+      .tr { right: 16px; top: 16px; }
+      .bl { left: 16px; bottom: 16px; }
+      .br { right: 16px; bottom: 16px; }
+
+      .crosshair {
+        position: absolute;
+        inset: 50% auto auto 50%;
+        transform: translate(-50%, -50%);
+        width: 260px;
+        height: 260px;
+        border: 3px solid #0b6bcb;
+        border-radius: 50%;
+      }
+
+      .crosshair::before,
+      .crosshair::after {
+        content: "";
+        position: absolute;
+        background: #0b6bcb;
+      }
+
+      .crosshair::before {
+        left: 50%;
+        top: -80px;
+        width: 3px;
+        height: 420px;
+      }
+
+      .crosshair::after {
+        left: -80px;
+        top: 50%;
+        width: 420px;
+        height: 3px;
+      }
+
+      aside {
+        display: grid;
+        gap: 12px;
+        align-content: start;
+      }
+
+      .metric {
+        border: 1px solid #d8e2e7;
+        border-radius: 8px;
+        background: #fff;
+        padding: 16px;
+      }
+
+      .metric span {
+        display: block;
+        color: #50626e;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 6px;
+        font-size: 26px;
+      }
+
+      footer {
+        padding: 18px 36px;
+        color: #50626e;
+        background: #ffffff;
+        border-top: 1px solid #d8e2e7;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <header>
+        <h1>2K VNC Resolution Check</h1>
+        <p class="subtitle">Expected remote framebuffer: 2560 x 1440. The grid makes browser scaling or blurriness easier to see.</p>
+      </header>
+      <main>
+        <section class="canvas">
+          <div class="mark tl">top left</div>
+          <div class="mark tr">top right</div>
+          <div class="mark bl">bottom left</div>
+          <div class="mark br">bottom right</div>
+          <div class="crosshair"></div>
+        </section>
+        <aside>
+          <div class="metric"><span>window.innerWidth</span><strong id="innerWidth">-</strong></div>
+          <div class="metric"><span>window.innerHeight</span><strong id="innerHeight">-</strong></div>
+          <div class="metric"><span>screen.width</span><strong id="screenWidth">-</strong></div>
+          <div class="metric"><span>screen.height</span><strong id="screenHeight">-</strong></div>
+          <div class="metric"><span>devicePixelRatio</span><strong id="dpr">-</strong></div>
+        </aside>
+      </main>
+      <footer>Use the corner labels and grid density to compare Web noVNC vs macOS Screen Sharing.</footer>
+    </div>
+    <script>
+      function update() {
+        innerWidth.textContent = window.innerWidth;
+        innerHeight.textContent = window.innerHeight;
+        screenWidth.textContent = screen.width;
+        screenHeight.textContent = screen.height;
+        dpr.textContent = window.devicePixelRatio;
+      }
+      update();
+      addEventListener("resize", update);
+    </script>
+  </body>
+</html>

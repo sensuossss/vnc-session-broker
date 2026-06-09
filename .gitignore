@@ -1,0 +1,10 @@
+node_modules/
+runtime/
+broker-state.json
+*.log
+
+# Built web UI (run `npm run web:build` to regenerate)
+web/dist/
+
+# Local, non-example session defaults (may contain private hosts/headers)
+session-defaults.json
