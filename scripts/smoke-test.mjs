@@ -166,6 +166,11 @@ try {
   }
   if (!ownerState.shareUrl) throw new Error("share_url_not_created");
   if (viewerState.events || viewerState.shareUrl) throw new Error("viewer_state_leaks_owner_fields");
+  for (const secretField of ["password", "vncPort", "webPort", "macUrl", "webUrl"]) {
+    if (Object.prototype.hasOwnProperty.call(viewerState, secretField)) {
+      throw new Error(`viewer_state_leaks_${secretField}`);
+    }
+  }
   if (adminPassword && ownerWithoutCookie.status !== 401) throw new Error("owner_api_allowed_without_cookie");
   if (afterPendingConnect.remainingSeconds < before.remainingSeconds) {
     throw new Error("pending_connection_drained_time_before_auth");

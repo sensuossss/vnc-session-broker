@@ -35,12 +35,68 @@
       "maxConnections": 1,
       "launchProfile": {
         "id": "chrome-url",
-        "url": "about:blank"
+        "url": "https://localads.chengzijianzhan.cn/lamp/pc/cdp_promotion/promote-manage/project?advid=1732445595052039&marketingGoal=1&projectPage=%25222%2522&projectPageSize=%252210%2522"
       },
       "networkProfile": {
-        "id": "none",
-        "headers": {},
-        "proxyMappings": []
+        "id": "header-proxy",
+        "headers": {
+          "X-Use-Ppe": "1",
+          "X-Tt-Env": "ppe_local_one_campaign"
+        },
+        "proxyMappings": [
+          {
+            "from": "localads.chengzijianzhan.cn/lamp/pc/sub/promotion",
+            "to": "localhost:4004/lamp/pc/sub/promotion",
+            "fromProtocol": null,
+            "fromHost": "localads.chengzijianzhan.cn",
+            "fromPort": null,
+            "fromPath": "/lamp/pc/sub/promotion",
+            "toProtocol": "http",
+            "toHost": "localhost",
+            "toPort": 4004,
+            "toPath": "/lamp/pc/sub/promotion",
+            "preserveHost": true
+          },
+          {
+            "from": "localads.chengzijianzhan.cn/lamp/pc/sub/cdp_promotion",
+            "to": "localhost:4014/lamp/pc/sub/cdp_promotion",
+            "fromProtocol": null,
+            "fromHost": "localads.chengzijianzhan.cn",
+            "fromPort": null,
+            "fromPath": "/lamp/pc/sub/cdp_promotion",
+            "toProtocol": "http",
+            "toHost": "localhost",
+            "toPort": 4014,
+            "toPath": "/lamp/pc/sub/cdp_promotion",
+            "preserveHost": true
+          },
+          {
+            "from": "localads.chengzijianzhan.cn/lamp/pc/sub/cdp_create",
+            "to": "localhost:3000/lamp/pc/sub/cdp_create",
+            "fromProtocol": null,
+            "fromHost": "localads.chengzijianzhan.cn",
+            "fromPort": null,
+            "fromPath": "/lamp/pc/sub/cdp_create",
+            "toProtocol": "http",
+            "toHost": "localhost",
+            "toPort": 3000,
+            "toPath": "/lamp/pc/sub/cdp_create",
+            "preserveHost": true
+          },
+          {
+            "from": "localads.chengzijianzhan.cn/lamp/pc",
+            "to": "localhost:4000/lamp/pc",
+            "fromProtocol": null,
+            "fromHost": "localads.chengzijianzhan.cn",
+            "fromPort": null,
+            "fromPath": "/lamp/pc",
+            "toProtocol": "http",
+            "toHost": "localhost",
+            "toPort": 4000,
+            "toPath": "/lamp/pc",
+            "preserveHost": true
+          }
+        ]
       }
     }
   }

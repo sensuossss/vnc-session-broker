@@ -927,7 +927,7 @@ function normalizeNetworkProfile(input = {}) {
 
 function normalizeNetworkProfileWithWarnings(input = {}) {
   const warnings = [];
-  const id = String(input?.id || "none");
+  const id = normalizeNetworkProfileId(input?.id);
   if (id === "none" || id === "default") {
     return { profile: { id: "none", headers: {}, proxyMappings: [] }, warnings };
   }
@@ -937,6 +937,12 @@ function normalizeNetworkProfileWithWarnings(input = {}) {
   const headers = sanitizeHeaders(input.headers || {}, warnings);
   const proxyMappings = normalizeProxyMappings(input.proxyMappings || [], warnings);
   return { profile: { id, headers, proxyMappings }, warnings };
+}
+
+function normalizeNetworkProfileId(value) {
+  const id = String(value || "none");
+  if (id === "ppe-header-proxy") return "header-proxy";
+  return id;
 }
 
 function normalizeProxyMappings(input = [], warnings = []) {
@@ -1456,8 +1462,6 @@ function publicLease(lease, role = "owner") {
     maxConnections: lease.maxConnections,
     remainingSeconds: Math.floor(lease.remainingSeconds),
     idleDeadline: lease.idleDeadline,
-    vncPort: lease.vncPort,
-    webPort: lease.webPort,
     launchProfile: role === "owner"
       ? {
           ...lease.launchProfile,
@@ -1470,11 +1474,13 @@ function publicLease(lease, role = "owner") {
     networkPlugin: role === "owner"
       ? lease.networkPlugin
       : viewerNetworkPluginState(lease.networkPlugin),
-    webUrl,
-    macUrl,
-    password: lease.password,
   };
   if (role === "owner") {
+    result.vncPort = lease.vncPort;
+    result.webPort = lease.webPort;
+    result.webUrl = webUrl;
+    result.macUrl = macUrl;
+    result.password = lease.password;
     result.shareUrl = `http://${config.publicHost}:${config.controlPort}/share/${lease.viewerToken}`;
     result.viewerToken = lease.viewerToken;
     result.warnings = lease.warnings || [];

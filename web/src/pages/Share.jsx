@@ -8,8 +8,6 @@ import {
   Timer,
   Drain,
   Metrics,
-  Gateways,
-  CopyField,
   ErrorNote,
 } from "../components/ui.jsx";
 
@@ -53,9 +51,9 @@ export default function Share() {
           { label: t("lease.networkProfile"), value: data.networkPlugin?.label || t("network.none") },
         ]}
       />
-      <Gateways webUrl={data.webUrl} macUrl={data.macUrl} />
-      <div className="fields">
-        <CopyField label={t("lease.password")} value={data.password} secret />
+      <div className="warning-note">
+        <strong>{t("share.connectionUnavailableTitle")}</strong>
+        <span>{t("share.connectionUnavailable")}</span>
       </div>
       <p className="center-note">{t("share.note")}</p>
     </Panel>

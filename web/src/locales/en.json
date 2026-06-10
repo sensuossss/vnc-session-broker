@@ -141,8 +141,10 @@
   "share": {
     "kicker": "viewer access",
     "title": "VNC Access",
-    "sub": "Open this session through Web noVNC or macOS Screen Sharing. Renewal is managed by the link owner.",
+    "sub": "Viewer links can see session status and countdown. Renewal is managed by the link owner.",
     "querying": "querying session",
+    "connectionUnavailableTitle": "Connection upgrade in progress",
+    "connectionUnavailable": "Viewer pages no longer receive VNC credentials. Web read-only access will return after the server-side gateway is enabled.",
     "note": "read-only link — renew / revoke is owner-side only"
   },
   "gateway": {

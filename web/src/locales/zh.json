@@ -141,8 +141,10 @@
   "share": {
     "kicker": "访客访问",
     "title": "VNC 访问",
-    "sub": "通过 Web noVNC 或 macOS 屏幕共享打开此会话。续期由链接属主管理。",
+    "sub": "访客链接可查看会话状态和倒计时。续期由链接属主管理。",
     "querying": "正在查询会话",
+    "connectionUnavailableTitle": "连接能力升级中",
+    "connectionUnavailable": "分享页暂不下发 VNC 凭据。服务端 Web 只读网关上线后将恢复访客连接入口。",
     "note": "只读链接 — 续期 / 吊销仅属主可操作"
   },
   "gateway": {
