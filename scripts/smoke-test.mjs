@@ -1,4 +1,5 @@
 import net from "node:net";
+import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 const base = process.env.TEST_BASE_URL || "http://127.0.0.1:7070";
@@ -56,7 +57,7 @@ const assertX11VncListenSurface = (expectedPort) => {
     throw new Error("x11vnc_expected_listener_missing");
   }
   const unexpected = x11vncSockets.filter((socket) => (
-    socket.port !== expectedPort || socket.host.includes(":")
+    socket.port === 5900 || socket.host.includes(":")
   ));
   if (unexpected.length > 0) {
     throw new Error(`x11vnc_unexpected_listener:${JSON.stringify(unexpected)}`);
@@ -83,6 +84,160 @@ const parseSsListenLine = (line) => {
     port: Number(local.slice(separator + 1)),
     raw: local,
   };
+};
+
+const probeViewerRfbGateway = async (url) => {
+  const parsed = new URL(url);
+  const socket = net.connect(Number(parsed.port || 80), parsed.hostname);
+  const key = crypto.randomBytes(16).toString("base64");
+  const ws = new SmokeWebSocket(socket);
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  socket.write([
+    `GET ${parsed.pathname} HTTP/1.1`,
+    `Host: ${parsed.host}`,
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    `Sec-WebSocket-Key: ${key}`,
+    "Sec-WebSocket-Version: 13",
+    "Sec-WebSocket-Protocol: binary",
+    "\r\n",
+  ].join("\r\n"));
+  await ws.waitForUpgrade();
+
+  const protocol = await ws.readBytes(12);
+  if (protocol.toString("ascii") !== "RFB 003.008\n") {
+    throw new Error("viewer_gateway_protocol_invalid");
+  }
+  ws.send(protocol);
+  const security = await ws.readBytes(2);
+  if (security[0] !== 1 || security[1] !== 1) {
+    throw new Error("viewer_gateway_security_not_none");
+  }
+  ws.send(Buffer.from([1]));
+  const securityResult = (await ws.readBytes(4)).readUInt32BE(0);
+  if (securityResult !== 0) throw new Error("viewer_gateway_security_failed");
+  ws.send(Buffer.from([1]));
+  const serverInit = await ws.readBytes(24);
+  const width = serverInit.readUInt16BE(0);
+  const height = serverInit.readUInt16BE(2);
+  const nameLength = serverInit.readUInt32BE(20);
+  if (width <= 0 || height <= 0) throw new Error("viewer_gateway_server_init_invalid");
+  if (nameLength > 0) await ws.readBytes(nameLength);
+
+  const keyEvent = Buffer.alloc(8);
+  keyEvent[0] = 4;
+  keyEvent[1] = 1;
+  keyEvent.writeUInt32BE(0x41, 4);
+  ws.send(keyEvent);
+  ws.close();
+};
+
+class SmokeWebSocket {
+  constructor(socket) {
+    this.socket = socket;
+    this.httpBuffer = Buffer.alloc(0);
+    this.upgraded = false;
+    this.frameBuffer = Buffer.alloc(0);
+    this.dataBuffer = Buffer.alloc(0);
+    this.waiters = [];
+    this.upgradeWaiters = [];
+    socket.on("data", (chunk) => this.onData(chunk));
+  }
+
+  waitForUpgrade() {
+    if (this.upgraded) return Promise.resolve();
+    return new Promise((resolve) => this.upgradeWaiters.push(resolve));
+  }
+
+  readBytes(length) {
+    if (this.dataBuffer.length >= length) return Promise.resolve(this.take(length));
+    return new Promise((resolve) => this.waiters.push({ length, resolve }));
+  }
+
+  send(payload) {
+    const data = Buffer.from(payload);
+    const header = maskedFrameHeader(data.length);
+    const mask = crypto.randomBytes(4);
+    const masked = Buffer.from(data);
+    for (let index = 0; index < masked.length; index += 1) {
+      masked[index] ^= mask[index % 4];
+    }
+    this.socket.write(Buffer.concat([header, mask, masked]));
+  }
+
+  close() {
+    this.socket.end();
+  }
+
+  onData(chunk) {
+    if (!this.upgraded) {
+      this.httpBuffer = Buffer.concat([this.httpBuffer, chunk]);
+      const split = this.httpBuffer.indexOf("\r\n\r\n");
+      if (split === -1) return;
+      const headers = this.httpBuffer.subarray(0, split).toString("ascii");
+      if (!headers.startsWith("HTTP/1.1 101")) throw new Error("viewer_gateway_upgrade_failed");
+      this.upgraded = true;
+      const rest = this.httpBuffer.subarray(split + 4);
+      this.httpBuffer = Buffer.alloc(0);
+      for (const resolve of this.upgradeWaiters.splice(0)) resolve();
+      if (rest.length > 0) this.onData(rest);
+      return;
+    }
+    this.frameBuffer = Buffer.concat([this.frameBuffer, chunk]);
+    while (this.frameBuffer.length >= 2) {
+      const opcode = this.frameBuffer[0] & 0x0f;
+      let length = this.frameBuffer[1] & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (this.frameBuffer.length < 4) return;
+        length = this.frameBuffer.readUInt16BE(2);
+        offset = 4;
+      } else if (length === 127) {
+        if (this.frameBuffer.length < 10) return;
+        length = this.frameBuffer.readUInt32BE(6);
+        offset = 10;
+      }
+      if (this.frameBuffer.length < offset + length) return;
+      const payload = this.frameBuffer.subarray(offset, offset + length);
+      this.frameBuffer = this.frameBuffer.subarray(offset + length);
+      if (opcode === 2) this.push(payload);
+      if (opcode === 8) this.socket.end();
+    }
+  }
+
+  push(payload) {
+    this.dataBuffer = Buffer.concat([this.dataBuffer, payload]);
+    while (this.waiters.length > 0 && this.dataBuffer.length >= this.waiters[0].length) {
+      const waiter = this.waiters.shift();
+      waiter.resolve(this.take(waiter.length));
+    }
+  }
+
+  take(length) {
+    const out = this.dataBuffer.subarray(0, length);
+    this.dataBuffer = this.dataBuffer.subarray(length);
+    return out;
+  }
+}
+
+const maskedFrameHeader = (length) => {
+  if (length < 126) return Buffer.from([0x82, 0x80 | length]);
+  if (length <= 0xffff) {
+    const header = Buffer.alloc(4);
+    header[0] = 0x82;
+    header[1] = 0x80 | 126;
+    header.writeUInt16BE(length, 2);
+    return header;
+  }
+  const header = Buffer.alloc(10);
+  header[0] = 0x82;
+  header[1] = 0x80 | 127;
+  header.writeUInt32BE(0, 2);
+  header.writeUInt32BE(length, 6);
+  return header;
 };
 
 const requestHeaders = (json = false) => {
@@ -221,12 +376,20 @@ try {
     throw new Error("owner_web_transport_entry_invalid");
   }
   const viewerEntries = viewerState.transport?.entries || [];
-  if (viewerState.transport?.id !== "legacy-vnc" || viewerEntries.length < 2) {
+  if (viewerState.transport?.id !== "legacy-vnc" || viewerEntries.length < 3) {
     throw new Error("viewer_transport_state_invalid");
   }
-  if (viewerEntries.some((entry) => entry.url || entry.credentialRef || entry.viewerSafe)) {
+  const viewerSafeEntry = viewerEntries.find((entry) => entry.kind === "web-novnc-readonly");
+  if (!viewerSafeEntry?.viewerSafe || !viewerSafeEntry.url?.includes(`/share/${viewerToken}/connect/web`)) {
+    throw new Error("viewer_transport_safe_entry_missing");
+  }
+  if (viewerSafeEntry.credentialRef) {
+    throw new Error("viewer_transport_safe_entry_leaks_credential");
+  }
+  if (viewerEntries.some((entry) => entry.kind !== "web-novnc-readonly" && (entry.url || entry.credentialRef || entry.viewerSafe))) {
     throw new Error("viewer_transport_entry_leaks_connection_capability");
   }
+  await probeViewerRfbGateway(viewerSafeEntry.url);
   if (!ownerState.connectionState?.total || !viewerState.connectionState?.total) {
     throw new Error("connection_state_missing");
   }

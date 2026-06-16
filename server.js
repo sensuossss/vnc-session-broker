@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import des from "des.js";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -189,6 +190,17 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+server.on("upgrade", (req, socket, head) => {
+  handleUpgrade(req, socket, head).catch((error) => {
+    console.error(error);
+    try {
+      socket.destroy();
+    } catch {
+      // Socket is already gone.
+    }
+  });
+});
+
 await loadBrokerState();
 
 server.listen(config.controlPort, "0.0.0.0", () => {
@@ -367,6 +379,8 @@ async function createLease(tokenRecord) {
       remainingSeconds: tokenRecord.quotaSeconds,
       idleDeadline: Date.now() + config.idleTtlSeconds * 1000,
       viewerToken: randomId(18),
+      viewerGatewayClients: new Set(),
+      viewerGatewayPending: 0,
       connectionEvents: [],
       lastLogSize: 0,
       lastAdmissionLogSize: 0,
@@ -489,6 +503,46 @@ function findLeaseByViewerToken(viewerToken) {
   return [...leases.values()].find((lease) => lease.viewerToken === viewerToken);
 }
 
+async function handleUpgrade(req, socket, head) {
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const match = url.pathname.match(/^\/share\/([^/]+)\/connect\/web$/);
+  if (!match) {
+    return rejectUpgrade(socket, 404, "not_found");
+  }
+  const lease = findLeaseByViewerToken(match[1]);
+  const validation = validateViewerGatewayLease(lease);
+  if (!validation.ok) {
+    return rejectUpgrade(socket, validation.httpStatus, validation.reason);
+  }
+
+  const ws = acceptWebSocket(req, socket, head);
+  runViewerRfbGateway(lease, ws).catch((error) => {
+    console.error(error);
+    ws.close(1011, "gateway_error");
+  });
+}
+
+function validateViewerGatewayLease(lease) {
+  if (!lease) return { ok: false, httpStatus: 404, reason: "token_invalid" };
+  if (lease.status !== "active") return { ok: false, httpStatus: 409, reason: "lease_inactive" };
+  if (lease.remainingSeconds <= 0) return { ok: false, httpStatus: 409, reason: "quota_exhausted" };
+  const pending = lease.viewerGatewayPending || 0;
+  if ((lease.connectedCount || 0) + pending >= lease.maxConnections) {
+    return { ok: false, httpStatus: 429, reason: "capacity_exceeded" };
+  }
+  return { ok: true };
+}
+
+function rejectUpgrade(socket, status, reason) {
+  const statusText = status === 404
+    ? "Not Found"
+    : status === 429
+      ? "Too Many Requests"
+      : "Forbidden";
+  socket.write(`HTTP/1.1 ${status} ${statusText}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${reason}\n`);
+  socket.destroy();
+}
+
 function renewLease(id, extraSeconds) {
   const lease = leases.get(id);
   if (!lease) throw new Error("lease_not_found");
@@ -568,6 +622,8 @@ function syncTransportConnectionState(lease) {
 }
 
 function legacyVncConnectionState(lease) {
+  const viewerCount = lease.viewerGatewayClients?.size || 0;
+  const totalCount = Math.max(lease.connectedCount, viewerCount);
   return {
     native: {
       connected: lease.connectedCount > 0,
@@ -578,12 +634,12 @@ function legacyVncConnectionState(lease) {
       connectedCount: 0,
     },
     viewer: {
-      connected: false,
-      connectedCount: 0,
+      connected: viewerCount > 0,
+      connectedCount: viewerCount,
     },
     total: {
-      connected: lease.connectedCount > 0,
-      connectedCount: lease.connectedCount,
+      connected: totalCount > 0,
+      connectedCount: totalCount,
     },
   };
 }
@@ -687,6 +743,8 @@ async function hydrateLease(rawLease) {
     remainingSeconds: nonNegativeNumber(rawLease.remainingSeconds, 0),
     idleDeadline: positiveNumber(rawLease.idleDeadline, Date.now() + config.idleTtlSeconds * 1000),
     viewerToken: rawLease.viewerToken || randomId(18),
+    viewerGatewayClients: new Set(),
+    viewerGatewayPending: 0,
     connectionEvents: arrayValue(rawLease.connectionEvents).slice(-200),
     lastLogSize: nonNegativeNumber(rawLease.lastLogSize, 0),
     lastAdmissionLogSize: nonNegativeNumber(rawLease.lastAdmissionLogSize, 0),
@@ -1482,6 +1540,7 @@ function updateConnectedState(lease) {
 
 function expireLease(lease, reason) {
   if (lease.status !== "active") return;
+  closeViewerGatewayClients(lease, closeCodeForLeaseReason(reason), reason);
   lease.status = reason;
   lease.expiredAt = Date.now();
   lease.connected = false;
@@ -1500,6 +1559,18 @@ function expireLease(lease, reason) {
     }
     cleanupChromeProfileDir(lease);
   }, 3000).unref();
+}
+
+function closeViewerGatewayClients(lease, code, reason) {
+  for (const client of lease.viewerGatewayClients || []) {
+    client.close(code, reason);
+  }
+}
+
+function closeCodeForLeaseReason(reason) {
+  if (reason === "quota_exhausted") return 4003;
+  if (reason === "idle_timeout") return 4005;
+  return 4002;
 }
 
 function killProcess(proc, signal) {
@@ -1640,6 +1711,443 @@ function runChecked(command, args) {
   }
 }
 
+function acceptWebSocket(req, socket, head) {
+  const key = req.headers["sec-websocket-key"];
+  if (!key) throw new Error("websocket_key_missing");
+  const accept = crypto
+    .createHash("sha1")
+    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+    .digest("base64");
+  socket.write([
+    "HTTP/1.1 101 Switching Protocols",
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    `Sec-WebSocket-Accept: ${accept}`,
+    "Sec-WebSocket-Protocol: binary",
+    "\r\n",
+  ].join("\r\n"));
+  return new WebSocketRfbPeer(socket, head);
+}
+
+async function runViewerRfbGateway(lease, ws) {
+  let backend = null;
+  let backendReader = null;
+  const clientRecord = {
+    close: (code, reason) => {
+      ws.close(code, reason);
+      if (backend) backend.socket.destroy();
+    },
+  };
+
+  try {
+    const validation = validateViewerGatewayLease(lease);
+    if (!validation.ok) {
+      ws.close(closeCodeForGatewayReason(validation.reason), validation.reason);
+      return;
+    }
+
+    lease.viewerGatewayPending = (lease.viewerGatewayPending || 0) + 1;
+    await handshakeRfbClient(ws);
+    backend = await connectRfbBackend(lease);
+    backendReader = backend.reader;
+    await authenticateRfbBackend(backend.socket, backendReader, lease.password);
+    const clientInit = await ws.readBytes(1);
+    backend.socket.write(clientInit);
+    const serverInit = await readRfbServerInit(backendReader);
+    ws.send(serverInit);
+
+    lease.viewerGatewayPending = Math.max(0, (lease.viewerGatewayPending || 1) - 1);
+    lease.viewerGatewayClients.add(clientRecord);
+    lease.connectionEvents.push({ at: Date.now(), type: "viewer_gateway_connect" });
+    markBrokerStateDirty();
+
+    const filter = new RfbReadOnlyClientFilter((chunk) => backend.socket.write(chunk), () => {
+      ws.close(1002, "rfb_client_protocol_error");
+      backend.socket.destroy();
+    });
+    ws.startStreaming((chunk) => filter.push(chunk));
+    backendReader.startStreaming((chunk) => ws.send(filterServerCutText(chunk)));
+    backend.socket.on("close", () => ws.close(1011, "rfb_backend_error"));
+    backend.socket.on("error", () => ws.close(1011, "rfb_backend_error"));
+    ws.onClose = () => {
+      backend.socket.destroy();
+      lease.viewerGatewayClients.delete(clientRecord);
+      lease.connectionEvents.push({ at: Date.now(), type: "viewer_gateway_disconnect" });
+      markBrokerStateDirty();
+    };
+  } catch (error) {
+    lease.viewerGatewayPending = Math.max(0, (lease.viewerGatewayPending || 1) - 1);
+    lease.viewerGatewayClients.delete(clientRecord);
+    if (backend) backend.socket.destroy();
+    if (!ws.closed) ws.close(1011, "gateway_error");
+    throw error;
+  }
+}
+
+function closeCodeForGatewayReason(reason) {
+  if (reason === "token_invalid") return 4001;
+  if (reason === "quota_exhausted") return 4003;
+  if (reason === "capacity_exceeded") return 4004;
+  return 4002;
+}
+
+async function handshakeRfbClient(ws) {
+  ws.send(Buffer.from("RFB 003.008\n", "ascii"));
+  await ws.readBytes(12);
+  ws.send(Buffer.from([1, 1]));
+  const selected = await ws.readBytes(1);
+  if (selected[0] !== 1) throw new Error("rfb_client_rejected_none_security");
+  const securityResult = Buffer.alloc(4);
+  securityResult.writeUInt32BE(0, 0);
+  ws.send(securityResult);
+}
+
+function connectRfbBackend(lease) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(lease.vncPort, "127.0.0.1");
+    const reader = new SocketByteReader(socket);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("rfb_backend_connect_timeout"));
+    }, 3000);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      resolve({ socket, reader });
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+async function authenticateRfbBackend(socket, reader, password) {
+  const protocol = await reader.readBytes(12);
+  socket.write(protocol);
+
+  if (protocol.includes(Buffer.from("003.003"))) {
+    const securityType = (await reader.readBytes(4)).readUInt32BE(0);
+    if (securityType !== 2) throw new Error(`rfb_backend_security_unsupported:${securityType}`);
+  } else {
+    const securityCount = (await reader.readBytes(1))[0];
+    if (securityCount === 0) {
+      const reasonLength = (await reader.readBytes(4)).readUInt32BE(0);
+      const reason = (await reader.readBytes(reasonLength)).toString("utf8");
+      throw new Error(`rfb_backend_security_failed:${reason}`);
+    }
+    const securityTypes = await reader.readBytes(securityCount);
+    if (!securityTypes.includes(2)) {
+      throw new Error(`rfb_backend_vncauth_unavailable:${[...securityTypes].join(",")}`);
+    }
+    socket.write(Buffer.from([2]));
+  }
+
+  const challenge = await reader.readBytes(16);
+  socket.write(vncAuthResponse(password, challenge));
+  const authResult = (await reader.readBytes(4)).readUInt32BE(0);
+  if (authResult !== 0) throw new Error(`rfb_backend_auth_failed:${authResult}`);
+
+}
+
+async function readRfbServerInit(reader) {
+  const serverInitHeader = await reader.readBytes(24);
+  const nameLength = serverInitHeader.readUInt32BE(20);
+  const name = nameLength > 0 ? await reader.readBytes(nameLength) : Buffer.alloc(0);
+  return Buffer.concat([serverInitHeader, name]);
+}
+
+function vncAuthResponse(password, challenge) {
+  const key = Buffer.alloc(8);
+  Buffer.from(String(password).slice(0, 8), "binary").copy(key);
+  for (let index = 0; index < key.length; index += 1) {
+    key[index] = reverseBits(key[index]);
+  }
+  const cipher = des.DES.create({ type: "encrypt", key, padding: false });
+  return Buffer.from(cipher.update(challenge));
+}
+
+function reverseBits(byte) {
+  let reversed = 0;
+  for (let bit = 0; bit < 8; bit += 1) {
+    reversed = (reversed << 1) | ((byte >> bit) & 1);
+  }
+  return reversed;
+}
+
+function filterServerCutText(chunk) {
+  return chunk;
+}
+
+class RfbReadOnlyClientFilter {
+  constructor(write, fail) {
+    this.write = write;
+    this.fail = fail;
+    this.buffer = Buffer.alloc(0);
+  }
+
+  push(chunk) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    while (this.buffer.length > 0) {
+      const message = this.nextMessage();
+      if (!message) return;
+      this.buffer = this.buffer.subarray(message.length);
+      if (message.allowed) this.write(message.data);
+    }
+  }
+
+  nextMessage() {
+    const type = this.buffer[0];
+    if (type === 0) return this.fixedMessage(20, true);
+    if (type === 2) {
+      if (this.buffer.length < 4) return null;
+      return this.fixedMessage(4 + this.buffer.readUInt16BE(2) * 4, true);
+    }
+    if (type === 3) return this.fixedMessage(10, true);
+    if (type === 4) return this.fixedMessage(8, false);
+    if (type === 5) return this.fixedMessage(6, false);
+    if (type === 6) {
+      if (this.buffer.length < 8) return null;
+      return this.fixedMessage(8 + this.buffer.readUInt32BE(4), false);
+    }
+    this.fail();
+    this.buffer = Buffer.alloc(0);
+    return null;
+  }
+
+  fixedMessage(length, allowed) {
+    if (this.buffer.length < length) return null;
+    return {
+      length,
+      allowed,
+      data: this.buffer.subarray(0, length),
+    };
+  }
+}
+
+class SocketByteReader {
+  constructor(socket) {
+    this.socket = socket;
+    this.buffer = Buffer.alloc(0);
+    this.waiters = [];
+    this.streaming = null;
+    this.onData = (chunk) => this.push(chunk);
+    socket.on("data", this.onData);
+  }
+
+  readBytes(length) {
+    if (this.buffer.length >= length) return Promise.resolve(this.take(length));
+    return new Promise((resolve, reject) => {
+      this.waiters.push({ length, resolve, reject });
+    });
+  }
+
+  startStreaming(callback) {
+    this.streaming = callback;
+    if (this.buffer.length > 0) {
+      const buffered = this.buffer;
+      this.buffer = Buffer.alloc(0);
+      callback(buffered);
+    }
+  }
+
+  push(chunk) {
+    if (this.streaming) {
+      this.streaming(chunk);
+      return;
+    }
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    this.flush();
+  }
+
+  flush() {
+    while (this.waiters.length > 0 && this.buffer.length >= this.waiters[0].length) {
+      const waiter = this.waiters.shift();
+      waiter.resolve(this.take(waiter.length));
+    }
+  }
+
+  take(length) {
+    const out = this.buffer.subarray(0, length);
+    this.buffer = this.buffer.subarray(length);
+    return out;
+  }
+}
+
+class WebSocketRfbPeer {
+  constructor(socket, head = Buffer.alloc(0)) {
+    this.socket = socket;
+    this.buffer = Buffer.alloc(0);
+    this.dataBuffer = Buffer.alloc(0);
+    this.waiters = [];
+    this.streaming = null;
+    this.closed = false;
+    this.onClose = null;
+    this.fragmentOpcode = null;
+    this.fragments = [];
+    socket.on("data", (chunk) => this.parse(chunk));
+    socket.on("close", () => this.markClosed());
+    socket.on("error", () => this.markClosed());
+    if (head?.length) this.parse(head);
+  }
+
+  readBytes(length) {
+    if (this.dataBuffer.length >= length) return Promise.resolve(this.takeData(length));
+    return new Promise((resolve, reject) => {
+      this.waiters.push({ length, resolve, reject });
+    });
+  }
+
+  startStreaming(callback) {
+    this.streaming = callback;
+    if (this.dataBuffer.length > 0) {
+      const buffered = this.dataBuffer;
+      this.dataBuffer = Buffer.alloc(0);
+      callback(buffered);
+    }
+  }
+
+  send(data) {
+    if (this.closed) return;
+    const payload = Buffer.from(data);
+    const header = websocketFrameHeader(payload.length, 2);
+    this.socket.write(Buffer.concat([header, payload]));
+  }
+
+  close(code = 1000, reason = "normal") {
+    if (this.closed) return;
+    const reasonBuffer = Buffer.from(String(reason).slice(0, 120));
+    const payload = Buffer.alloc(2 + reasonBuffer.length);
+    payload.writeUInt16BE(code, 0);
+    reasonBuffer.copy(payload, 2);
+    this.socket.write(Buffer.concat([websocketFrameHeader(payload.length, 8), payload]), () => {
+      this.socket.end();
+    });
+    this.markClosed();
+  }
+
+  parse(chunk) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    while (this.buffer.length >= 2) {
+      const first = this.buffer[0];
+      const second = this.buffer[1];
+      const fin = Boolean(first & 0x80);
+      const opcode = first & 0x0f;
+      const masked = Boolean(second & 0x80);
+      let length = second & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (this.buffer.length < offset + 2) return;
+        length = this.buffer.readUInt16BE(offset);
+        offset += 2;
+      } else if (length === 127) {
+        if (this.buffer.length < offset + 8) return;
+        const high = this.buffer.readUInt32BE(offset);
+        const low = this.buffer.readUInt32BE(offset + 4);
+        if (high !== 0) {
+          this.close(1009, "frame_too_large");
+          return;
+        }
+        length = low;
+        offset += 8;
+      }
+      if (!masked || length > 16 * 1024 * 1024) {
+        this.close(1002, "bad_frame");
+        return;
+      }
+      if (this.buffer.length < offset + 4 + length) return;
+      const mask = this.buffer.subarray(offset, offset + 4);
+      offset += 4;
+      const payload = Buffer.from(this.buffer.subarray(offset, offset + length));
+      for (let index = 0; index < payload.length; index += 1) {
+        payload[index] ^= mask[index % 4];
+      }
+      this.buffer = this.buffer.subarray(offset + length);
+      this.handleFrame(opcode, fin, payload);
+    }
+  }
+
+  handleFrame(opcode, fin, payload) {
+    if (opcode === 8) {
+      this.close(1000, "normal");
+      return;
+    }
+    if (opcode === 9) {
+      this.socket.write(Buffer.concat([websocketFrameHeader(payload.length, 10), payload]));
+      return;
+    }
+    if (opcode === 10) return;
+    if (opcode === 0) {
+      if (!this.fragmentOpcode) {
+        this.close(1002, "unexpected_continuation");
+        return;
+      }
+      this.fragments.push(payload);
+      if (fin) {
+        const data = Buffer.concat(this.fragments);
+        const originalOpcode = this.fragmentOpcode;
+        this.fragmentOpcode = null;
+        this.fragments = [];
+        if (originalOpcode === 2) this.pushData(data);
+      }
+      return;
+    }
+    if (opcode !== 2) {
+      this.close(1003, "binary_required");
+      return;
+    }
+    if (!fin) {
+      this.fragmentOpcode = opcode;
+      this.fragments = [payload];
+      return;
+    }
+    this.pushData(payload);
+  }
+
+  pushData(payload) {
+    if (this.streaming) {
+      this.streaming(payload);
+      return;
+    }
+    this.dataBuffer = Buffer.concat([this.dataBuffer, payload]);
+    while (this.waiters.length > 0 && this.dataBuffer.length >= this.waiters[0].length) {
+      const waiter = this.waiters.shift();
+      waiter.resolve(this.takeData(waiter.length));
+    }
+  }
+
+  takeData(length) {
+    const out = this.dataBuffer.subarray(0, length);
+    this.dataBuffer = this.dataBuffer.subarray(length);
+    return out;
+  }
+
+  markClosed() {
+    if (this.closed) return;
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) {
+      waiter.reject(new Error("websocket_closed"));
+    }
+    if (this.onClose) this.onClose();
+  }
+}
+
+function websocketFrameHeader(length, opcode) {
+  if (length < 126) return Buffer.from([0x80 | opcode, length]);
+  if (length <= 0xffff) {
+    const header = Buffer.alloc(4);
+    header[0] = 0x80 | opcode;
+    header[1] = 126;
+    header.writeUInt16BE(length, 2);
+    return header;
+  }
+  const header = Buffer.alloc(10);
+  header[0] = 0x80 | opcode;
+  header[1] = 127;
+  header.writeUInt32BE(0, 2);
+  header.writeUInt32BE(length, 6);
+  return header;
+}
+
 function publicLease(lease, role = "owner") {
   const macUrl = `vnc://${config.publicHost}:${lease.vncPort}`;
   const webUrl = buildNoVncUrl(lease);
@@ -1734,6 +2242,13 @@ function legacyTransportState() {
         requiresOwnerAuth: true,
         credentialRef: "vncPassword",
       },
+      {
+        kind: "web-novnc-readonly",
+        label: "noVNC read-only",
+        viewerSafe: true,
+        requiresOwnerAuth: false,
+        credentialRef: null,
+      },
     ],
   };
 }
@@ -1777,6 +2292,7 @@ function publicTransportEntry(lease, entry, role) {
 function transportEntryUrl(lease, kind) {
   if (kind === "native-vnc") return `vnc://${config.publicHost}:${lease.vncPort}`;
   if (kind === "web-novnc") return buildNoVncUrl(lease);
+  if (kind === "web-novnc-readonly") return `http://${config.publicHost}:${config.controlPort}/share/${lease.viewerToken}/connect/web`;
   return null;
 }
 
