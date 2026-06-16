@@ -69,6 +69,11 @@ VNC_SESSION_COMMAND=
 CHROME_PROFILE_TEMPLATE_DIR=
 CHROME_WINDOW_SIZE=<derived from VNC_RESOLUTION, for example 2560,1440>
 MAP_SUPER_TO_CONTROL=true
+NOVNC_RESIZE=scale
+NOVNC_QUALITY=9
+NOVNC_COMPRESSION=2
+X11VNC_NOXDAMAGE=true
+X11VNC_EXTRA_ARGS=
 VNC_PORT_BASE=6101
 WEB_PORT_BASE=7101
 CDP_PORT_BASE=9101
@@ -102,6 +107,14 @@ or expires.
 `CHROME_WINDOW_SIZE` controls the built-in Chrome launch window size. If unset,
 the broker derives it from `VNC_RESOLUTION`, so a `2560x1440x24` framebuffer
 launches Chrome as `--window-size=2560,1440`.
+
+`NOVNC_RESIZE`, `NOVNC_QUALITY`, and `NOVNC_COMPRESSION` control the noVNC URL
+the broker gives to owners. Use `NOVNC_RESIZE=off` for a crisp 1:1 framebuffer
+view, or `scale` to fit the remote desktop into the browser window.
+`NOVNC_QUALITY` and `NOVNC_COMPRESSION` accept values from `0` to `9`.
+Set `X11VNC_NOXDAMAGE=false` to let `x11vnc` use X DAMAGE update tracking.
+`X11VNC_EXTRA_ARGS` appends whitespace-separated flags to each `x11vnc`
+process, which is useful for A/B testing capture and update tuning.
 
 For an isolated virtual framebuffer per lease:
 

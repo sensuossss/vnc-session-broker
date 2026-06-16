@@ -33,6 +33,11 @@ const config = {
   watchdogMs: intEnv("WATCHDOG_MS", 1000),
   runtimeDir: process.env.RUNTIME_DIR || path.join(__dirname, "runtime"),
   noVncWebRoot: process.env.NOVNC_WEB_ROOT || "/usr/share/novnc",
+  noVncResize: choiceEnv("NOVNC_RESIZE", "scale", ["off", "scale", "remote"]),
+  noVncQuality: boundedIntEnv("NOVNC_QUALITY", 9, 0, 9),
+  noVncCompression: boundedIntEnv("NOVNC_COMPRESSION", 2, 0, 9),
+  x11vncNoXDamage: process.env.X11VNC_NOXDAMAGE !== "false",
+  x11vncExtraArgs: argListEnv("X11VNC_EXTRA_ARGS"),
   webDistDir: process.env.WEB_DIST || path.join(__dirname, "web", "dist"),
   sessionDefaultsFile: process.env.SESSION_DEFAULTS_FILE || path.join(__dirname, "session-defaults.json"),
   brokerStateFile: process.env.BROKER_STATE_FILE || path.join(__dirname, "broker-state.json"),
@@ -365,8 +370,9 @@ async function createLease(tokenRecord) {
     "-shared",
     "-accept",
     acceptScriptPath,
-    "-noxdamage",
+    ...(config.x11vncNoXDamage ? ["-noxdamage"] : []),
     "-repeat",
+    ...config.x11vncExtraArgs,
     "-o",
     logPath,
   ], { logPath: path.join(dir, "x11vnc.stderr.log") }));
@@ -1451,7 +1457,7 @@ function runChecked(command, args) {
 
 function publicLease(lease, role = "owner") {
   const macUrl = `vnc://${config.publicHost}:${lease.vncPort}`;
-  const webUrl = `http://${config.publicHost}:${lease.webPort}/vnc.html?host=${encodeURIComponent(config.publicHost)}&port=${lease.webPort}&autoconnect=1&resize=scale&quality=9&compression=2`;
+  const webUrl = buildNoVncUrl(lease);
   const result = {
     id: lease.id,
     userId: lease.userId,
@@ -1487,6 +1493,17 @@ function publicLease(lease, role = "owner") {
     result.events = lease.connectionEvents.slice(-20);
   }
   return result;
+}
+
+function buildNoVncUrl(lease) {
+  const url = new URL(`http://${config.publicHost}:${lease.webPort}/vnc.html`);
+  url.searchParams.set("host", config.publicHost);
+  url.searchParams.set("port", String(lease.webPort));
+  url.searchParams.set("autoconnect", "1");
+  url.searchParams.set("resize", config.noVncResize);
+  url.searchParams.set("quality", String(config.noVncQuality));
+  url.searchParams.set("compression", String(config.noVncCompression));
+  return url.toString();
 }
 
 function viewerNetworkPluginState(plugin) {
@@ -1670,6 +1687,25 @@ function randomPassword() {
 
 function intEnv(name, fallback) {
   return intValue(process.env[name], fallback);
+}
+
+function boundedIntEnv(name, fallback, min, max) {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  const value = Math.floor(parsed);
+  if (value < min || value > max) return fallback;
+  return value;
+}
+
+function choiceEnv(name, fallback, choices) {
+  const value = String(process.env[name] || "").trim();
+  return choices.includes(value) ? value : fallback;
+}
+
+function argListEnv(name) {
+  const value = String(process.env[name] || "").trim();
+  if (!value) return [];
+  return value.split(/\s+/).filter(Boolean);
 }
 
 function resolutionToWindowSize(resolution) {
