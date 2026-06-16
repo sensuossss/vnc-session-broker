@@ -174,6 +174,31 @@ Xfce is added.
 The one-time token flow still exists as a compatibility API, but it is not the
 main owner workflow.
 
+## Transport Adapters
+
+Session control-plane logic is intentionally separate from remote-display
+transport logic. The broker owns leases, tokens, quotas, user defaults, launch
+profiles, network plugins, lifecycle, and audit logs. A transport adapter owns
+the display server and connection gateways.
+
+The current adapter is `legacy-vnc`:
+
+- prepares the X display (`Xvfb` in isolated mode, or the configured attach
+  display)
+- creates the VNC password file and connection-admission hook
+- starts `x11vnc` for native RFB clients
+- starts `websockify` + noVNC for browser clients
+- reports normalized connection state back to the control plane
+- exposes backend-agnostic connection entries through `transport.entries`
+
+Owner responses include legacy compatibility fields (`webUrl`, `macUrl`, and
+`password`) plus the normalized transport descriptor. Viewer share responses
+only receive safe entry metadata; unsafe entries omit URLs and credentials.
+
+Future web transports such as KasmVNC or WebRTC should be added as adapters
+instead of embedding backend-specific process and connection logic in
+`createLease()`.
+
 ## Launch Profiles
 
 `launchProfile` decides what appears inside the user's desktop when the lease

@@ -283,6 +283,99 @@ async function createLease(tokenRecord) {
   const dir = path.join(config.runtimeDir, id);
   fs.mkdirSync(dir, { recursive: true });
 
+  const transport = await prepareTransportAdapter("legacy-vnc", {
+    id,
+    dir,
+    maxConnections: tokenRecord.maxConnections,
+  });
+  const plugin = await prepareSessionPlugin(tokenRecord.networkProfile, id, dir);
+  const chromeProfileDir = prepareChromeProfileDir(dir);
+  const processes = [...transport.processes];
+
+  if (transport.startSessionCommand) {
+    const sessionCommand = buildSessionCommand(tokenRecord.launchProfile, { chromeProfileDir });
+    if (sessionCommand) {
+      if (plugin.proxyConfigPath) {
+        processes.push(startProcess(process.execPath, [
+          path.join(__dirname, "scripts", "network-proxy.mjs"),
+          plugin.proxyConfigPath,
+        ], { logPath: path.join(dir, "network-proxy.stderr.log") }));
+        await sleep(250);
+      }
+      if (plugin.chromeArgs.length > 0) {
+        writeChromeLaunchWrappers(dir, plugin.chromeArgs);
+      }
+      processes.push(startProcess("sh", [
+        "-c",
+        sessionCommand,
+      ], {
+        logPath: path.join(dir, "session-command.log"),
+        env: {
+          DISPLAY: transport.display,
+          PATH: `${dir}:${process.env.PATH || ""}`,
+          VNC_SESSION_ID: id,
+          VNC_NETWORK_PROFILE: plugin.publicState.id,
+          VNC_LAUNCH_PROFILE: tokenRecord.launchProfile.id,
+        },
+      }));
+      await sleep(1000);
+    }
+  }
+
+  if (plugin.sidecarConfigPath) {
+    processes.push(startProcess(process.execPath, [
+      path.join(__dirname, "scripts", "cdp-sidecar.mjs"),
+      plugin.sidecarConfigPath,
+    ], { logPath: path.join(dir, "cdp-sidecar.stderr.log") }));
+  }
+
+  processes.push(...startTransportGateways(transport));
+
+  return {
+    id,
+    token: tokenRecord.token,
+    userId: tokenRecord.userId,
+    status: "active",
+    transport: transport.publicState,
+    display: transport.display,
+    vncPort: transport.vncPort,
+    webPort: transport.webPort,
+    password: transport.password,
+    passFile: transport.passFile,
+    logPath: transport.logPath,
+    admissionLogPath: transport.admissionLogPath,
+    acceptScriptPath: transport.acceptScriptPath,
+    dir,
+    chromeProfileDir,
+    processes,
+    maxConnections: tokenRecord.maxConnections,
+    networkPlugin: plugin.publicState,
+    warnings: tokenRecord.warnings || [],
+    launchProfile: tokenRecord.launchProfile,
+    issuedAt: Date.now(),
+    lastTickAt: Date.now(),
+    connected: false,
+    connectedCount: 0,
+    connectionState: emptyConnectionState(),
+    pendingClients: {},
+    activeClients: {},
+    connectedSince: null,
+    lastDisconnectAt: null,
+    remainingSeconds: tokenRecord.quotaSeconds,
+    idleDeadline: Date.now() + config.idleTtlSeconds * 1000,
+    viewerToken: randomId(18),
+    connectionEvents: [],
+    lastLogSize: 0,
+    lastAdmissionLogSize: 0,
+  };
+}
+
+async function prepareTransportAdapter(adapterId, context) {
+  if (adapterId !== "legacy-vnc") throw new Error(`unknown_transport_adapter:${adapterId}`);
+  return prepareLegacyVncTransport(context);
+}
+
+async function prepareLegacyVncTransport({ dir, maxConnections }) {
   const password = randomPassword();
   const passFile = path.join(dir, "vnc.passwd");
   runChecked("x11vnc", ["-storepasswd", password, passFile]);
@@ -293,10 +386,9 @@ async function createLease(tokenRecord) {
   const logPath = path.join(dir, "x11vnc.log");
   const admissionLogPath = path.join(dir, "admission.log");
   const acceptScriptPath = path.join(dir, "accept-client.sh");
-  const plugin = await prepareSessionPlugin(tokenRecord.networkProfile, id, dir);
-  const chromeProfileDir = prepareChromeProfileDir(dir);
-  writeAcceptScript(acceptScriptPath, admissionLogPath, tokenRecord.maxConnections);
   const processes = [];
+
+  writeAcceptScript(acceptScriptPath, admissionLogPath, maxConnections);
 
   if (config.desktopMode === "xvfb") {
     processes.push(startProcess("Xvfb", [
@@ -320,75 +412,10 @@ async function createLease(tokenRecord) {
       }));
       await sleep(200);
     }
-
-    const sessionCommand = buildSessionCommand(tokenRecord.launchProfile, { chromeProfileDir });
-    if (sessionCommand) {
-      if (plugin.proxyConfigPath) {
-        processes.push(startProcess(process.execPath, [
-          path.join(__dirname, "scripts", "network-proxy.mjs"),
-          plugin.proxyConfigPath,
-        ], { logPath: path.join(dir, "network-proxy.stderr.log") }));
-        await sleep(250);
-      }
-      if (plugin.chromeArgs.length > 0) {
-        writeChromeLaunchWrappers(dir, plugin.chromeArgs);
-      }
-      processes.push(startProcess("sh", [
-        "-c",
-        sessionCommand,
-      ], {
-        logPath: path.join(dir, "session-command.log"),
-        env: {
-          DISPLAY: display,
-          PATH: `${dir}:${process.env.PATH || ""}`,
-          VNC_SESSION_ID: id,
-          VNC_NETWORK_PROFILE: plugin.publicState.id,
-          VNC_LAUNCH_PROFILE: tokenRecord.launchProfile.id,
-        },
-      }));
-      await sleep(1000);
-    }
   }
-
-  if (plugin.sidecarConfigPath) {
-    processes.push(startProcess(process.execPath, [
-      path.join(__dirname, "scripts", "cdp-sidecar.mjs"),
-      plugin.sidecarConfigPath,
-    ], { logPath: path.join(dir, "cdp-sidecar.stderr.log") }));
-  }
-
-  processes.push(startProcess("x11vnc", [
-    "-display",
-    display,
-    "-no6",
-    "-noipv6",
-    "-rfbport",
-    String(vncPort),
-    "-rfbauth",
-    passFile,
-    "-forever",
-    "-shared",
-    "-accept",
-    acceptScriptPath,
-    ...(config.x11vncNoXDamage ? ["-noxdamage"] : []),
-    "-repeat",
-    ...config.x11vncExtraArgs,
-    "-o",
-    logPath,
-  ], { logPath: path.join(dir, "x11vnc.stderr.log") }));
-
-  processes.push(startProcess("websockify", [
-    "--web",
-    config.noVncWebRoot,
-    String(webPort),
-    `localhost:${vncPort}`,
-  ], { logPath: path.join(dir, "websockify.log") }));
 
   return {
-    id,
-    token: tokenRecord.token,
-    userId: tokenRecord.userId,
-    status: "active",
+    id: "legacy-vnc",
     display,
     vncPort,
     webPort,
@@ -397,28 +424,45 @@ async function createLease(tokenRecord) {
     logPath,
     admissionLogPath,
     acceptScriptPath,
-    dir,
-    chromeProfileDir,
     processes,
-    maxConnections: tokenRecord.maxConnections,
-    networkPlugin: plugin.publicState,
-    warnings: tokenRecord.warnings || [],
-    launchProfile: tokenRecord.launchProfile,
-    issuedAt: Date.now(),
-    lastTickAt: Date.now(),
-    connected: false,
-    connectedCount: 0,
-    pendingClients: {},
-    activeClients: {},
-    connectedSince: null,
-    lastDisconnectAt: null,
-    remainingSeconds: tokenRecord.quotaSeconds,
-    idleDeadline: Date.now() + config.idleTtlSeconds * 1000,
-    viewerToken: randomId(18),
-    connectionEvents: [],
-    lastLogSize: 0,
-    lastAdmissionLogSize: 0,
+    startSessionCommand: config.desktopMode === "xvfb",
+    publicState: legacyTransportState(),
   };
+}
+
+function startTransportGateways(transport) {
+  if (transport.id !== "legacy-vnc") throw new Error(`unknown_transport_adapter:${transport.id}`);
+  return startLegacyVncGateways(transport);
+}
+
+function startLegacyVncGateways(transport) {
+  return [
+    startProcess("x11vnc", [
+      "-display",
+      transport.display,
+      "-no6",
+      "-noipv6",
+      "-rfbport",
+      String(transport.vncPort),
+      "-rfbauth",
+      transport.passFile,
+      "-forever",
+      "-shared",
+      "-accept",
+      transport.acceptScriptPath,
+      ...(config.x11vncNoXDamage ? ["-noxdamage"] : []),
+      "-repeat",
+      ...config.x11vncExtraArgs,
+      "-o",
+      transport.logPath,
+    ], { logPath: path.join(path.dirname(transport.logPath), "x11vnc.stderr.log") }),
+    startProcess("websockify", [
+      "--web",
+      config.noVncWebRoot,
+      String(transport.webPort),
+      `localhost:${transport.vncPort}`,
+    ], { logPath: path.join(path.dirname(transport.logPath), "websockify.log") }),
+  ];
 }
 
 function findLeaseByViewerToken(viewerToken) {
@@ -470,8 +514,7 @@ function tickLeases() {
   for (const lease of leases.values()) {
     if (lease.status !== "active") continue;
     markBrokerStateDirty();
-    scanX11vncLog(lease);
-    scanAdmissionLog(lease);
+    syncTransportConnectionState(lease);
 
     if (lease.connected) {
       const deltaSeconds = Math.max(0, (now - lease.lastTickAt) / 1000);
@@ -489,6 +532,53 @@ function tickLeases() {
     }
   }
   persistBrokerStateNow();
+}
+
+function syncTransportConnectionState(lease) {
+  if (transportAdapterId(lease) !== "legacy-vnc") {
+    lease.connectionState = emptyConnectionState();
+    lease.connected = false;
+    lease.connectedCount = 0;
+    return;
+  }
+
+  scanX11vncLog(lease);
+  scanAdmissionLog(lease);
+  lease.connectionState = legacyVncConnectionState(lease);
+}
+
+function legacyVncConnectionState(lease) {
+  return {
+    native: {
+      connected: lease.connectedCount > 0,
+      connectedCount: lease.connectedCount,
+    },
+    web: {
+      connected: false,
+      connectedCount: 0,
+    },
+    viewer: {
+      connected: false,
+      connectedCount: 0,
+    },
+    total: {
+      connected: lease.connectedCount > 0,
+      connectedCount: lease.connectedCount,
+    },
+  };
+}
+
+function emptyConnectionState() {
+  return {
+    native: { connected: false, connectedCount: 0 },
+    web: { connected: false, connectedCount: 0 },
+    viewer: { connected: false, connectedCount: 0 },
+    total: { connected: false, connectedCount: 0 },
+  };
+}
+
+function transportAdapterId(lease) {
+  return lease.transport?.id || "legacy-vnc";
 }
 
 async function loadBrokerState() {
@@ -549,6 +639,7 @@ async function hydrateLease(rawLease) {
     token: rawLease.token || null,
     userId: rawLease.userId || "owner",
     status,
+    transport: hydrateTransportState(rawLease),
     display: rawLease.display || config.attachDisplay,
     vncPort: positiveNumber(rawLease.vncPort, 0),
     webPort: positiveNumber(rawLease.webPort, 0),
@@ -568,6 +659,7 @@ async function hydrateLease(rawLease) {
     lastTickAt: Date.now(),
     connected: Boolean(rawLease.connected),
     connectedCount: positiveNumber(rawLease.connectedCount, 0),
+    connectionState: normalizeConnectionState(rawLease.connectionState),
     pendingClients: objectValue(rawLease.pendingClients),
     activeClients: objectValue(rawLease.activeClients),
     connectedSince: rawLease.connectedSince || null,
@@ -678,6 +770,7 @@ function serializeLease(lease) {
     token: lease.token,
     userId: lease.userId,
     status: lease.status,
+    transport: lease.transport || legacyTransportState(),
     display: lease.display,
     vncPort: lease.vncPort,
     webPort: lease.webPort,
@@ -697,6 +790,7 @@ function serializeLease(lease) {
     lastTickAt: lease.lastTickAt,
     connected: lease.connected,
     connectedCount: lease.connectedCount,
+    connectionState: normalizeConnectionState(lease.connectionState),
     pendingClients: lease.pendingClients,
     activeClients: lease.activeClients,
     connectedSince: lease.connectedSince,
@@ -1465,6 +1559,8 @@ function publicLease(lease, role = "owner") {
     display: lease.display,
     connected: lease.connected,
     connectedCount: lease.connectedCount,
+    connectionState: normalizeConnectionState(lease.connectionState),
+    transport: publicTransportState(lease, role),
     maxConnections: lease.maxConnections,
     remainingSeconds: Math.floor(lease.remainingSeconds),
     idleDeadline: lease.idleDeadline,
@@ -1513,6 +1609,102 @@ function viewerNetworkPluginState(plugin) {
     label: plugin.label,
     enabled: plugin.enabled,
     status: plugin.status,
+  };
+}
+
+function hydrateTransportState(rawLease) {
+  const rawTransport = rawLease?.transport && typeof rawLease.transport === "object"
+    ? rawLease.transport
+    : legacyTransportState();
+  const transport = {
+    ...legacyTransportState(),
+    ...rawTransport,
+  };
+  transport.id = String(transport.id || "legacy-vnc");
+  transport.entries = normalizeTransportEntries(transport.entries);
+  return transport;
+}
+
+function legacyTransportState() {
+  return {
+    id: "legacy-vnc",
+    entries: [
+      {
+        kind: "native-vnc",
+        label: "macOS Screen Sharing",
+        viewerSafe: false,
+        requiresOwnerAuth: true,
+        credentialRef: "vncPassword",
+      },
+      {
+        kind: "web-novnc",
+        label: "noVNC",
+        viewerSafe: false,
+        requiresOwnerAuth: true,
+        credentialRef: "vncPassword",
+      },
+    ],
+  };
+}
+
+function normalizeTransportEntries(entries) {
+  const normalized = arrayValue(entries)
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => ({
+      kind: String(entry.kind || "unknown"),
+      label: String(entry.label || entry.kind || "Unknown"),
+      viewerSafe: Boolean(entry.viewerSafe),
+      requiresOwnerAuth: entry.requiresOwnerAuth !== false,
+      credentialRef: entry.credentialRef ? String(entry.credentialRef) : null,
+    }));
+  return normalized.length > 0 ? normalized : legacyTransportState().entries;
+}
+
+function publicTransportState(lease, role) {
+  const transport = hydrateTransportState({ transport: lease.transport });
+  return {
+    id: transport.id,
+    entries: transport.entries.map((entry) => publicTransportEntry(lease, entry, role)),
+  };
+}
+
+function publicTransportEntry(lease, entry, role) {
+  const result = {
+    kind: entry.kind,
+    label: entry.label,
+    viewerSafe: entry.viewerSafe,
+    requiresOwnerAuth: entry.requiresOwnerAuth,
+  };
+  if (role !== "owner" && !entry.viewerSafe) return result;
+
+  const url = transportEntryUrl(lease, entry.kind);
+  if (url) result.url = url;
+  if (role === "owner" && entry.credentialRef) result.credentialRef = entry.credentialRef;
+  return result;
+}
+
+function transportEntryUrl(lease, kind) {
+  if (kind === "native-vnc") return `vnc://${config.publicHost}:${lease.vncPort}`;
+  if (kind === "web-novnc") return buildNoVncUrl(lease);
+  return null;
+}
+
+function normalizeConnectionState(state) {
+  const raw = state && typeof state === "object" ? state : {};
+  return {
+    native: normalizeConnectionBucket(raw.native),
+    web: normalizeConnectionBucket(raw.web),
+    viewer: normalizeConnectionBucket(raw.viewer),
+    total: normalizeConnectionBucket(raw.total),
+  };
+}
+
+function normalizeConnectionBucket(bucket) {
+  const raw = bucket && typeof bucket === "object" ? bucket : {};
+  const connectedCount = nonNegativeNumber(raw.connectedCount, 0);
+  return {
+    connected: Boolean(raw.connected || connectedCount > 0),
+    connectedCount,
   };
 }
 

@@ -164,6 +164,26 @@ try {
   if (viewerState.networkPlugin?.id !== "header-proxy" || viewerState.networkPlugin?.headerKeys || viewerState.networkPlugin?.proxyMappings) {
     throw new Error("viewer_network_plugin_state_invalid");
   }
+  if (ownerState.transport?.id !== "legacy-vnc") {
+    throw new Error("owner_transport_id_invalid");
+  }
+  const ownerEntries = ownerState.transport?.entries || [];
+  if (!ownerEntries.some((entry) => entry.kind === "native-vnc" && entry.url?.startsWith("vnc://") && entry.credentialRef === "vncPassword")) {
+    throw new Error("owner_native_transport_entry_invalid");
+  }
+  if (!ownerEntries.some((entry) => entry.kind === "web-novnc" && entry.url?.includes("/vnc.html") && entry.credentialRef === "vncPassword")) {
+    throw new Error("owner_web_transport_entry_invalid");
+  }
+  const viewerEntries = viewerState.transport?.entries || [];
+  if (viewerState.transport?.id !== "legacy-vnc" || viewerEntries.length < 2) {
+    throw new Error("viewer_transport_state_invalid");
+  }
+  if (viewerEntries.some((entry) => entry.url || entry.credentialRef || entry.viewerSafe)) {
+    throw new Error("viewer_transport_entry_leaks_connection_capability");
+  }
+  if (!ownerState.connectionState?.total || !viewerState.connectionState?.total) {
+    throw new Error("connection_state_missing");
+  }
   if (!ownerState.shareUrl) throw new Error("share_url_not_created");
   if (viewerState.events || viewerState.shareUrl) throw new Error("viewer_state_leaks_owner_fields");
   for (const secretField of ["password", "vncPort", "webPort", "macUrl", "webUrl"]) {
