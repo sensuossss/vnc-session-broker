@@ -11,5 +11,10 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    // @novnc/novnc 1.7 ships top-level await; needs es2022+ to transpile.
+    target: "es2022",
+  },
+  optimizeDeps: {
+    esbuildOptions: { target: "es2022" },
   },
 });

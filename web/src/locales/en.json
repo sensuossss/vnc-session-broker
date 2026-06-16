@@ -145,6 +145,20 @@
     "querying": "querying session",
     "connectionUnavailableTitle": "Connection upgrade in progress",
     "connectionUnavailable": "Viewer pages no longer receive VNC credentials. Web read-only access will return after the server-side gateway is enabled.",
+    "readonly": "Read-only",
+    "reconnect": "Reconnect",
+    "vnc": {
+      "connecting": "connecting…",
+      "connected": "live · read-only",
+      "dropped": "connection dropped",
+      "closed": "disconnected",
+      "error": "connection error"
+    },
+    "endedQuota": "Session ended — quota exhausted",
+    "endedIdle": "Session ended — idle timeout",
+    "endedRevoked": "Session ended — revoked by owner",
+    "endedGeneric": "Session ended",
+    "endedDesc": "This share link can no longer connect. Ask the link owner to start a new session.",
     "note": "read-only link — renew / revoke is owner-side only"
   },
   "gateway": {

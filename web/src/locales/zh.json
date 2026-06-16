@@ -145,6 +145,20 @@
     "querying": "正在查询会话",
     "connectionUnavailableTitle": "连接能力升级中",
     "connectionUnavailable": "分享页暂不下发 VNC 凭据。服务端 Web 只读网关上线后将恢复访客连接入口。",
+    "readonly": "只读",
+    "reconnect": "重新连接",
+    "vnc": {
+      "connecting": "连接中…",
+      "connected": "实时 · 只读",
+      "dropped": "连接中断",
+      "closed": "已断开",
+      "error": "连接错误"
+    },
+    "endedQuota": "会话结束 — 配额耗尽",
+    "endedIdle": "会话结束 — 空闲超时",
+    "endedRevoked": "会话已被属主吊销",
+    "endedGeneric": "会话已结束",
+    "endedDesc": "该分享链接已无法连接。请联系链接属主开启新会话。",
     "note": "只读链接 — 续期 / 吊销仅属主可操作"
   },
   "gateway": {
