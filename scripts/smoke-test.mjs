@@ -1,4 +1,5 @@
 import net from "node:net";
+import { spawnSync } from "node:child_process";
 
 const base = process.env.TEST_BASE_URL || "http://127.0.0.1:7070";
 const adminPassword = process.env.TEST_ADMIN_PASSWORD || "";
@@ -39,6 +40,50 @@ const put = async (path, body = {}) => {
 };
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const assertX11VncListenSurface = (expectedPort) => {
+  const result = spawnSync("ss", ["-ltnpH"], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`ss_failed:${result.stderr || result.stdout || result.status}`);
+  }
+  const x11vncSockets = result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes("x11vnc"))
+    .map(parseSsListenLine)
+    .filter(Boolean);
+  if (!x11vncSockets.some((socket) => socket.port === expectedPort)) {
+    throw new Error("x11vnc_expected_listener_missing");
+  }
+  const unexpected = x11vncSockets.filter((socket) => (
+    socket.port !== expectedPort || socket.host.includes(":")
+  ));
+  if (unexpected.length > 0) {
+    throw new Error(`x11vnc_unexpected_listener:${JSON.stringify(unexpected)}`);
+  }
+};
+
+const parseSsListenLine = (line) => {
+  const columns = line.split(/\s+/);
+  if (columns.length < 4) return null;
+  const local = columns[3];
+  if (local.startsWith("[")) {
+    const end = local.lastIndexOf("]:");
+    if (end === -1) return null;
+    return {
+      host: local.slice(1, end),
+      port: Number(local.slice(end + 2)),
+      raw: local,
+    };
+  }
+  const separator = local.lastIndexOf(":");
+  if (separator === -1) return null;
+  return {
+    host: local.slice(0, separator),
+    port: Number(local.slice(separator + 1)),
+    raw: local,
+  };
+};
 
 const requestHeaders = (json = false) => {
   const headers = {};
@@ -116,6 +161,7 @@ const lease = await post("/api/sessions", {
 
 try {
   await delay(1200);
+  assertX11VncListenSurface(lease.vncPort);
   const before = await get(`/api/leases/${lease.id}`);
 
   await new Promise((resolve, reject) => {

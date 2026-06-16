@@ -282,92 +282,107 @@ async function createLease(tokenRecord) {
   const id = randomId(12);
   const dir = path.join(config.runtimeDir, id);
   fs.mkdirSync(dir, { recursive: true });
+  const processes = [];
+  let chromeProfileDir = "";
 
-  const transport = await prepareTransportAdapter("legacy-vnc", {
-    id,
-    dir,
-    maxConnections: tokenRecord.maxConnections,
-  });
-  const plugin = await prepareSessionPlugin(tokenRecord.networkProfile, id, dir);
-  const chromeProfileDir = prepareChromeProfileDir(dir);
-  const processes = [...transport.processes];
+  try {
+    const transport = await prepareTransportAdapter("legacy-vnc", {
+      id,
+      dir,
+      maxConnections: tokenRecord.maxConnections,
+    });
+    processes.push(...transport.processes);
+    const plugin = await prepareSessionPlugin(tokenRecord.networkProfile, id, dir);
+    chromeProfileDir = prepareChromeProfileDir(dir);
 
-  if (transport.startSessionCommand) {
-    const sessionCommand = buildSessionCommand(tokenRecord.launchProfile, { chromeProfileDir });
-    if (sessionCommand) {
-      if (plugin.proxyConfigPath) {
-        processes.push(startProcess(process.execPath, [
-          path.join(__dirname, "scripts", "network-proxy.mjs"),
-          plugin.proxyConfigPath,
-        ], { logPath: path.join(dir, "network-proxy.stderr.log") }));
-        await sleep(250);
+    if (transport.startSessionCommand) {
+      const sessionCommand = buildSessionCommand(tokenRecord.launchProfile, { chromeProfileDir });
+      if (sessionCommand) {
+        if (plugin.proxyConfigPath) {
+          processes.push(startProcess(process.execPath, [
+            path.join(__dirname, "scripts", "network-proxy.mjs"),
+            plugin.proxyConfigPath,
+          ], { logPath: path.join(dir, "network-proxy.stderr.log") }));
+          await sleep(250);
+        }
+        if (plugin.chromeArgs.length > 0) {
+          writeChromeLaunchWrappers(dir, plugin.chromeArgs);
+        }
+        processes.push(startProcess("sh", [
+          "-c",
+          sessionCommand,
+        ], {
+          logPath: path.join(dir, "session-command.log"),
+          env: {
+            DISPLAY: transport.display,
+            PATH: `${dir}:${process.env.PATH || ""}`,
+            VNC_SESSION_ID: id,
+            VNC_NETWORK_PROFILE: plugin.publicState.id,
+            VNC_LAUNCH_PROFILE: tokenRecord.launchProfile.id,
+          },
+        }));
+        await sleep(1000);
       }
-      if (plugin.chromeArgs.length > 0) {
-        writeChromeLaunchWrappers(dir, plugin.chromeArgs);
-      }
-      processes.push(startProcess("sh", [
-        "-c",
-        sessionCommand,
-      ], {
-        logPath: path.join(dir, "session-command.log"),
-        env: {
-          DISPLAY: transport.display,
-          PATH: `${dir}:${process.env.PATH || ""}`,
-          VNC_SESSION_ID: id,
-          VNC_NETWORK_PROFILE: plugin.publicState.id,
-          VNC_LAUNCH_PROFILE: tokenRecord.launchProfile.id,
-        },
-      }));
-      await sleep(1000);
     }
+
+    if (plugin.sidecarConfigPath) {
+      processes.push(startProcess(process.execPath, [
+        path.join(__dirname, "scripts", "cdp-sidecar.mjs"),
+        plugin.sidecarConfigPath,
+      ], { logPath: path.join(dir, "cdp-sidecar.stderr.log") }));
+    }
+
+    processes.push(...await startTransportGateways(transport));
+
+    return {
+      id,
+      token: tokenRecord.token,
+      userId: tokenRecord.userId,
+      status: "active",
+      transport: transport.publicState,
+      display: transport.display,
+      vncPort: transport.vncPort,
+      webPort: transport.webPort,
+      password: transport.password,
+      passFile: transport.passFile,
+      logPath: transport.logPath,
+      admissionLogPath: transport.admissionLogPath,
+      acceptScriptPath: transport.acceptScriptPath,
+      dir,
+      chromeProfileDir,
+      processes,
+      maxConnections: tokenRecord.maxConnections,
+      networkPlugin: plugin.publicState,
+      warnings: tokenRecord.warnings || [],
+      launchProfile: tokenRecord.launchProfile,
+      issuedAt: Date.now(),
+      lastTickAt: Date.now(),
+      connected: false,
+      connectedCount: 0,
+      connectionState: emptyConnectionState(),
+      pendingClients: {},
+      activeClients: {},
+      connectedSince: null,
+      lastDisconnectAt: null,
+      remainingSeconds: tokenRecord.quotaSeconds,
+      idleDeadline: Date.now() + config.idleTtlSeconds * 1000,
+      viewerToken: randomId(18),
+      connectionEvents: [],
+      lastLogSize: 0,
+      lastAdmissionLogSize: 0,
+    };
+  } catch (error) {
+    for (const proc of processes) {
+      killProcess(proc, "SIGTERM");
+    }
+    setTimeout(() => {
+      for (const proc of processes) {
+        killProcess(proc, "SIGKILL");
+      }
+    }, 1000).unref();
+    cleanupChromeProfileDir({ dir, chromeProfileDir });
+    throw error;
   }
-
-  if (plugin.sidecarConfigPath) {
-    processes.push(startProcess(process.execPath, [
-      path.join(__dirname, "scripts", "cdp-sidecar.mjs"),
-      plugin.sidecarConfigPath,
-    ], { logPath: path.join(dir, "cdp-sidecar.stderr.log") }));
-  }
-
-  processes.push(...startTransportGateways(transport));
-
-  return {
-    id,
-    token: tokenRecord.token,
-    userId: tokenRecord.userId,
-    status: "active",
-    transport: transport.publicState,
-    display: transport.display,
-    vncPort: transport.vncPort,
-    webPort: transport.webPort,
-    password: transport.password,
-    passFile: transport.passFile,
-    logPath: transport.logPath,
-    admissionLogPath: transport.admissionLogPath,
-    acceptScriptPath: transport.acceptScriptPath,
-    dir,
-    chromeProfileDir,
-    processes,
-    maxConnections: tokenRecord.maxConnections,
-    networkPlugin: plugin.publicState,
-    warnings: tokenRecord.warnings || [],
-    launchProfile: tokenRecord.launchProfile,
-    issuedAt: Date.now(),
-    lastTickAt: Date.now(),
-    connected: false,
-    connectedCount: 0,
-    connectionState: emptyConnectionState(),
-    pendingClients: {},
-    activeClients: {},
-    connectedSince: null,
-    lastDisconnectAt: null,
-    remainingSeconds: tokenRecord.quotaSeconds,
-    idleDeadline: Date.now() + config.idleTtlSeconds * 1000,
-    viewerToken: randomId(18),
-    connectionEvents: [],
-    lastLogSize: 0,
-    lastAdmissionLogSize: 0,
-  };
 }
 
 async function prepareTransportAdapter(adapterId, context) {
@@ -430,39 +445,44 @@ async function prepareLegacyVncTransport({ dir, maxConnections }) {
   };
 }
 
-function startTransportGateways(transport) {
+async function startTransportGateways(transport) {
   if (transport.id !== "legacy-vnc") throw new Error(`unknown_transport_adapter:${transport.id}`);
   return startLegacyVncGateways(transport);
 }
 
-function startLegacyVncGateways(transport) {
-  return [
-    startProcess("x11vnc", [
-      "-display",
-      transport.display,
-      "-no6",
-      "-noipv6",
-      "-rfbport",
-      String(transport.vncPort),
-      "-rfbauth",
-      transport.passFile,
-      "-forever",
-      "-shared",
-      "-accept",
-      transport.acceptScriptPath,
-      ...(config.x11vncNoXDamage ? ["-noxdamage"] : []),
-      "-repeat",
-      ...config.x11vncExtraArgs,
-      "-o",
-      transport.logPath,
-    ], { logPath: path.join(path.dirname(transport.logPath), "x11vnc.stderr.log") }),
-    startProcess("websockify", [
-      "--web",
-      config.noVncWebRoot,
-      String(transport.webPort),
-      `localhost:${transport.vncPort}`,
-    ], { logPath: path.join(path.dirname(transport.logPath), "websockify.log") }),
-  ];
+async function startLegacyVncGateways(transport) {
+  const x11vnc = startProcess("x11vnc", [
+    "-display",
+    transport.display,
+    "-no6",
+    "-noipv6",
+    "-rfbport",
+    String(transport.vncPort),
+    "-rfbportv6",
+    "-1",
+    "-rfbauth",
+    transport.passFile,
+    "-forever",
+    "-shared",
+    "-accept",
+    transport.acceptScriptPath,
+    ...(config.x11vncNoXDamage ? ["-noxdamage"] : []),
+    "-repeat",
+    ...config.x11vncExtraArgs,
+    "-o",
+    transport.logPath,
+  ], { logPath: path.join(path.dirname(transport.logPath), "x11vnc.stderr.log") });
+
+  await assertLegacyVncListenSurface(x11vnc, transport.vncPort);
+
+  const websockify = startProcess("websockify", [
+    "--web",
+    config.noVncWebRoot,
+    String(transport.webPort),
+    `localhost:${transport.vncPort}`,
+  ], { logPath: path.join(path.dirname(transport.logPath), "websockify.log") });
+
+  return [x11vnc, websockify];
 }
 
 function findLeaseByViewerToken(viewerToken) {
@@ -1519,6 +1539,77 @@ function isPortFree(port) {
     });
     probe.listen(port, "0.0.0.0");
   });
+}
+
+async function assertLegacyVncListenSurface(proc, expectedPort) {
+  let sockets = [];
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      throw new Error(`x11vnc_exited_before_listen:${proc.exitCode ?? proc.signalCode}`);
+    }
+    sockets = listeningTcpSocketsForPid(proc.pid);
+    if (sockets.length > 0) break;
+    await sleep(100);
+  }
+
+  if (sockets.length === 0) {
+    throw new Error(`x11vnc_listen_surface_missing:${proc.pid}`);
+  }
+
+  const unexpected = sockets.filter((socket) => (
+    socket.port !== expectedPort || isIpv6ListenAddress(socket.host)
+  ));
+  if (unexpected.length > 0) {
+    throw new Error(`x11vnc_unexpected_listen_surface:${JSON.stringify(unexpected)}`);
+  }
+}
+
+function listeningTcpSocketsForPid(pid) {
+  const result = spawnSync("ss", ["-ltnpH"], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`ss_failed:${result.stderr || result.stdout || result.status}`);
+  }
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes(`pid=${pid},`))
+    .map(parseSsListenLine)
+    .filter(Boolean);
+}
+
+function parseSsListenLine(line) {
+  const columns = line.split(/\s+/);
+  if (columns.length < 4) return null;
+  const local = columns[3];
+  const parsed = parseLocalAddress(local);
+  if (!parsed) return null;
+  return {
+    host: parsed.host,
+    port: parsed.port,
+    raw: local,
+  };
+}
+
+function parseLocalAddress(local) {
+  if (local.startsWith("[")) {
+    const end = local.lastIndexOf("]:");
+    if (end === -1) return null;
+    return {
+      host: local.slice(1, end),
+      port: Number(local.slice(end + 2)),
+    };
+  }
+  const separator = local.lastIndexOf(":");
+  if (separator === -1) return null;
+  return {
+    host: local.slice(0, separator),
+    port: Number(local.slice(separator + 1)),
+  };
+}
+
+function isIpv6ListenAddress(host) {
+  return host.includes(":") || host === "::" || host === "*";
 }
 
 function startProcess(command, args, options) {
