@@ -354,6 +354,7 @@ async function createLease(tokenRecord) {
       transport: transport.publicState,
       display: transport.display,
       vncPort: transport.vncPort,
+      internalVncPort: transport.internalVncPort,
       webPort: transport.webPort,
       password: transport.password,
       passFile: transport.passFile,
@@ -363,6 +364,7 @@ async function createLease(tokenRecord) {
       dir,
       chromeProfileDir,
       processes,
+      nativeGatewayServer: transport.nativeGatewayServer || null,
       maxConnections: tokenRecord.maxConnections,
       networkPlugin: plugin.publicState,
       warnings: tokenRecord.warnings || [],
@@ -410,6 +412,7 @@ async function prepareLegacyVncTransport({ dir, maxConnections }) {
   runChecked("x11vnc", ["-storepasswd", password, passFile]);
 
   const vncPort = await allocatePort("vnc");
+  const internalVncPort = await allocatePort("vnc");
   const webPort = await allocatePort("web");
   const display = config.desktopMode === "xvfb" ? `:${nextDisplay++}` : config.attachDisplay;
   const logPath = path.join(dir, "x11vnc.log");
@@ -447,6 +450,7 @@ async function prepareLegacyVncTransport({ dir, maxConnections }) {
     id: "legacy-vnc",
     display,
     vncPort,
+    internalVncPort,
     webPort,
     password,
     passFile,
@@ -468,10 +472,12 @@ async function startLegacyVncGateways(transport) {
   const x11vnc = startProcess("x11vnc", [
     "-display",
     transport.display,
+    "-listen",
+    "127.0.0.1",
     "-no6",
     "-noipv6",
     "-rfbport",
-    String(transport.vncPort),
+    String(transport.internalVncPort),
     "-rfbportv6",
     "-1",
     "-rfbauth",
@@ -487,16 +493,46 @@ async function startLegacyVncGateways(transport) {
     transport.logPath,
   ], { logPath: path.join(path.dirname(transport.logPath), "x11vnc.stderr.log") });
 
-  await assertLegacyVncListenSurface(x11vnc, transport.vncPort);
+  await assertLegacyVncListenSurface(x11vnc, {
+    port: transport.internalVncPort,
+    host: "127.0.0.1",
+  });
+
+  transport.nativeGatewayServer = await startNativeVncGateway(transport);
 
   const websockify = startProcess("websockify", [
     "--web",
     config.noVncWebRoot,
     String(transport.webPort),
-    `localhost:${transport.vncPort}`,
+    `127.0.0.1:${transport.internalVncPort}`,
   ], { logPath: path.join(path.dirname(transport.logPath), "websockify.log") });
 
   return [x11vnc, websockify];
+}
+
+function startNativeVncGateway(transport) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer((client) => {
+      const backend = net.connect(transport.internalVncPort, "127.0.0.1");
+      client.on("error", () => backend.destroy());
+      backend.on("error", () => client.destroy());
+      client.on("close", () => backend.destroy());
+      backend.on("close", () => client.destroy());
+      client.pipe(backend);
+      backend.pipe(client);
+    });
+    server.on("error", reject);
+    server.listen(transport.vncPort, "0.0.0.0", () => {
+      server.off("error", reject);
+      try {
+        assertNativeGatewayListenSurface(server, transport.vncPort);
+        resolve(server);
+      } catch (error) {
+        server.close();
+        reject(error);
+      }
+    });
+  });
 }
 
 function findLeaseByViewerToken(viewerToken) {
@@ -718,6 +754,7 @@ async function hydrateLease(rawLease) {
     transport: hydrateTransportState(rawLease),
     display: rawLease.display || config.attachDisplay,
     vncPort: positiveNumber(rawLease.vncPort, 0),
+    internalVncPort: positiveNumber(rawLease.internalVncPort, rawLease.vncPort || 0),
     webPort: positiveNumber(rawLease.webPort, 0),
     password: String(rawLease.password || ""),
     passFile: rawLease.passFile || path.join(dir, "vnc.passwd"),
@@ -727,6 +764,7 @@ async function hydrateLease(rawLease) {
     dir,
     chromeProfileDir: rawLease.chromeProfileDir || null,
     processes: hydrateProcesses(rawLease.processes),
+    nativeGatewayServer: null,
     maxConnections: positiveNumber(rawLease.maxConnections, config.defaultMaxConnections),
     networkPlugin: rawLease.networkPlugin || viewerNetworkPluginState(null),
     warnings: arrayValue(rawLease.warnings),
@@ -789,6 +827,7 @@ function hydrateProcesses(rawProcesses) {
 
 function advanceAllocatorsFromLease(lease) {
   if (lease.vncPort >= nextVncPort) nextVncPort = lease.vncPort + 1;
+  if (lease.internalVncPort >= nextVncPort) nextVncPort = lease.internalVncPort + 1;
   if (lease.webPort >= nextWebPort) nextWebPort = lease.webPort + 1;
   const cdpPort = Number(lease.networkPlugin?.cdpPort || 0);
   const proxyPort = Number(lease.networkPlugin?.proxyPort || 0);
@@ -851,6 +890,7 @@ function serializeLease(lease) {
     transport: lease.transport || legacyTransportState(),
     display: lease.display,
     vncPort: lease.vncPort,
+    internalVncPort: lease.internalVncPort,
     webPort: lease.webPort,
     password: lease.password,
     passFile: lease.passFile,
@@ -1553,12 +1593,23 @@ function expireLease(lease, reason) {
   for (const proc of lease.processes) {
     killProcess(proc, "SIGTERM");
   }
+  closeNativeGatewayServer(lease);
   setTimeout(() => {
     for (const proc of lease.processes) {
       killProcess(proc, "SIGKILL");
     }
     cleanupChromeProfileDir(lease);
   }, 3000).unref();
+}
+
+function closeNativeGatewayServer(lease) {
+  if (!lease.nativeGatewayServer) return;
+  try {
+    lease.nativeGatewayServer.close();
+  } catch {
+    // Server may already be closed.
+  }
+  lease.nativeGatewayServer = null;
 }
 
 function closeViewerGatewayClients(lease, code, reason) {
@@ -1612,7 +1663,7 @@ function isPortFree(port) {
   });
 }
 
-async function assertLegacyVncListenSurface(proc, expectedPort) {
+async function assertLegacyVncListenSurface(proc, expected) {
   let sockets = [];
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
@@ -1629,7 +1680,7 @@ async function assertLegacyVncListenSurface(proc, expectedPort) {
   }
 
   const unexpected = sockets.filter((socket) => (
-    socket.port !== expectedPort || isIpv6ListenAddress(socket.host)
+    socket.port !== expected.port || socket.host !== expected.host || isIpv6ListenAddress(socket.host)
   ));
   if (unexpected.length > 0) {
     throw new Error(`x11vnc_unexpected_listen_surface:${JSON.stringify(unexpected)}`);
@@ -1647,6 +1698,16 @@ function listeningTcpSocketsForPid(pid) {
     .filter((line) => line.includes(`pid=${pid},`))
     .map(parseSsListenLine)
     .filter(Boolean);
+}
+
+function assertNativeGatewayListenSurface(server, expectedPort) {
+  const address = server.address();
+  if (!address || typeof address !== "object") {
+    throw new Error("native_gateway_listen_surface_missing");
+  }
+  if (address.port !== expectedPort || address.address !== "0.0.0.0") {
+    throw new Error(`native_gateway_unexpected_listen_surface:${JSON.stringify(address)}`);
+  }
 }
 
 function parseSsListenLine(line) {
@@ -1804,7 +1865,7 @@ async function handshakeRfbClient(ws) {
 
 function connectRfbBackend(lease) {
   return new Promise((resolve, reject) => {
-    const socket = net.connect(lease.vncPort, "127.0.0.1");
+    const socket = net.connect(lease.internalVncPort || lease.vncPort, "127.0.0.1");
     const reader = new SocketByteReader(socket);
     const timer = setTimeout(() => {
       socket.destroy();

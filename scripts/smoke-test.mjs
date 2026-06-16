@@ -1,6 +1,7 @@
 import net from "node:net";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
+import des from "des.js";
 
 const base = process.env.TEST_BASE_URL || "http://127.0.0.1:7070";
 const adminPassword = process.env.TEST_ADMIN_PASSWORD || "";
@@ -42,7 +43,7 @@ const put = async (path, body = {}) => {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const assertX11VncListenSurface = (expectedPort) => {
+const assertX11VncListenSurface = (externalVncPort) => {
   const result = spawnSync("ss", ["-ltnpH"], { encoding: "utf8" });
   if (result.status !== 0) {
     throw new Error(`ss_failed:${result.stderr || result.stdout || result.status}`);
@@ -53,11 +54,11 @@ const assertX11VncListenSurface = (expectedPort) => {
     .filter((line) => line.includes("x11vnc"))
     .map(parseSsListenLine)
     .filter(Boolean);
-  if (!x11vncSockets.some((socket) => socket.port === expectedPort)) {
+  if (!x11vncSockets.some((socket) => socket.host === "127.0.0.1" && socket.port !== externalVncPort)) {
     throw new Error("x11vnc_expected_listener_missing");
   }
   const unexpected = x11vncSockets.filter((socket) => (
-    socket.port === 5900 || socket.host.includes(":")
+    socket.port === 5900 || socket.port === externalVncPort || socket.host !== "127.0.0.1" || socket.host.includes(":")
   ));
   if (unexpected.length > 0) {
     throw new Error(`x11vnc_unexpected_listener:${JSON.stringify(unexpected)}`);
@@ -134,6 +135,83 @@ const probeViewerRfbGateway = async (url) => {
   ws.send(keyEvent);
   ws.close();
 };
+
+const probeOwnerNativeRfb = async ({ host, port, password }) => {
+  const socket = net.connect(port, host);
+  const reader = new TcpReader(socket);
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  const protocol = await reader.readBytes(12);
+  if (!protocol.toString("ascii").startsWith("RFB 003.")) {
+    throw new Error("owner_native_protocol_invalid");
+  }
+  socket.write(protocol);
+  const securityCount = (await reader.readBytes(1))[0];
+  const securityTypes = await reader.readBytes(securityCount);
+  if (!securityTypes.includes(2)) throw new Error("owner_native_vncauth_missing");
+  socket.write(Buffer.from([2]));
+  const challenge = await reader.readBytes(16);
+  socket.write(vncAuthResponse(password, challenge));
+  const securityResult = (await reader.readBytes(4)).readUInt32BE(0);
+  if (securityResult !== 0) throw new Error("owner_native_auth_failed");
+  socket.write(Buffer.from([1]));
+  const serverInit = await reader.readBytes(24);
+  const width = serverInit.readUInt16BE(0);
+  const height = serverInit.readUInt16BE(2);
+  const nameLength = serverInit.readUInt32BE(20);
+  if (width <= 0 || height <= 0) throw new Error("owner_native_server_init_invalid");
+  if (nameLength > 0) await reader.readBytes(nameLength);
+  socket.end();
+};
+
+const vncAuthResponse = (password, challenge) => {
+  const key = Buffer.alloc(8);
+  Buffer.from(String(password).slice(0, 8), "binary").copy(key);
+  for (let index = 0; index < key.length; index += 1) {
+    key[index] = reverseBits(key[index]);
+  }
+  const cipher = des.DES.create({ type: "encrypt", key, padding: false });
+  return Buffer.from(cipher.update(challenge));
+};
+
+const reverseBits = (byte) => {
+  let reversed = 0;
+  for (let bit = 0; bit < 8; bit += 1) {
+    reversed = (reversed << 1) | ((byte >> bit) & 1);
+  }
+  return reversed;
+};
+
+class TcpReader {
+  constructor(socket) {
+    this.buffer = Buffer.alloc(0);
+    this.waiters = [];
+    socket.on("data", (chunk) => {
+      this.buffer = Buffer.concat([this.buffer, chunk]);
+      this.flush();
+    });
+  }
+
+  readBytes(length) {
+    if (this.buffer.length >= length) return Promise.resolve(this.take(length));
+    return new Promise((resolve) => this.waiters.push({ length, resolve }));
+  }
+
+  flush() {
+    while (this.waiters.length > 0 && this.buffer.length >= this.waiters[0].length) {
+      const waiter = this.waiters.shift();
+      waiter.resolve(this.take(waiter.length));
+    }
+  }
+
+  take(length) {
+    const out = this.buffer.subarray(0, length);
+    this.buffer = this.buffer.subarray(length);
+    return out;
+  }
+}
 
 class SmokeWebSocket {
   constructor(socket) {
@@ -389,6 +467,12 @@ try {
   if (viewerEntries.some((entry) => entry.kind !== "web-novnc-readonly" && (entry.url || entry.credentialRef || entry.viewerSafe))) {
     throw new Error("viewer_transport_entry_leaks_connection_capability");
   }
+  await probeOwnerNativeRfb({
+    host: "127.0.0.1",
+    port: ownerState.vncPort,
+    password: ownerState.password,
+  });
+  await delay(500);
   await probeViewerRfbGateway(viewerSafeEntry.url);
   if (!ownerState.connectionState?.total || !viewerState.connectionState?.total) {
     throw new Error("connection_state_missing");
