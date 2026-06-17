@@ -16,10 +16,17 @@ function toWsUrl(httpUrl) {
 // Embeds a read-only noVNC session pointed at the broker's per-share gateway
 // WebSocket. The gateway already terminated RFB auth (security type None) and
 // drops viewer input server-side; `viewOnly` here is defense-in-depth.
-export default function VncScreen({ url, onState }) {
+export default function VncScreen({ url, mode = "actual", onState }) {
   const screenRef = useRef(null);
+  const rfbRef = useRef(null);
   const stateRef = useRef(onState);
   stateRef.current = onState;
+
+  useEffect(() => {
+    if (!rfbRef.current) return;
+    rfbRef.current.scaleViewport = mode === "fit";
+    rfbRef.current.clipViewport = false;
+  }, [mode]);
 
   useEffect(() => {
     if (!url || !screenRef.current) return undefined;
@@ -34,8 +41,13 @@ export default function VncScreen({ url, onState }) {
       emit("error");
       return undefined;
     }
+    rfbRef.current = rfb;
     rfb.viewOnly = true;
-    rfb.scaleViewport = true;
+    rfb.scaleViewport = mode === "fit";
+    rfb.clipViewport = false;
+    rfb.resizeSession = false;
+    rfb.qualityLevel = 9;
+    rfb.compressionLevel = 2;
     rfb.background = "transparent";
 
     const onConnect = () => emit("connected");
@@ -52,8 +64,9 @@ export default function VncScreen({ url, onState }) {
       } catch {
         // already torn down
       }
+      if (rfbRef.current === rfb) rfbRef.current = null;
     };
   }, [url]);
 
-  return <div className="vnc-screen" ref={screenRef} />;
+  return <div className={`vnc-screen is-${mode}`} ref={screenRef} />;
 }

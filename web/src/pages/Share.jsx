@@ -19,6 +19,7 @@ export default function Share() {
   const { data, error } = usePoll(() => getShare(viewerToken), 1000);
   const [vncState, setVncState] = useState("connecting");
   const [attempt, setAttempt] = useState(0);
+  const [viewMode, setViewMode] = useState("actual");
 
   // The gateway advertises a viewer-safe web entry once P0b is live. Until then
   // no such entry exists and the page falls back to the upgrade notice.
@@ -76,13 +77,29 @@ export default function Share() {
           <div className="vnc-bar">
             <span className="readonly-badge">{t("share.readonly")}</span>
             <span className={`vnc-status is-${vncState}`}>{t(`share.vnc.${vncState}`)}</span>
+            <div className="vnc-view-toggle" role="group" aria-label={t("share.viewMode")}>
+              <button
+                type="button"
+                className={viewMode === "actual" ? "is-active" : ""}
+                onClick={() => setViewMode("actual")}
+              >
+                {t("share.viewActual")}
+              </button>
+              <button
+                type="button"
+                className={viewMode === "fit" ? "is-active" : ""}
+                onClick={() => setViewMode("fit")}
+              >
+                {t("share.viewFit")}
+              </button>
+            </div>
             {(vncState === "dropped" || vncState === "error") && (
               <button type="button" className="ghost" onClick={reconnect}>
                 {t("share.reconnect")}
               </button>
             )}
           </div>
-          <VncScreen key={attempt} url={webEntry.url} onState={setVncState} />
+          <VncScreen key={attempt} url={webEntry.url} mode={viewMode} onState={setVncState} />
         </div>
       ) : active ? (
         <div className="warning-note">

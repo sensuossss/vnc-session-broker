@@ -147,6 +147,9 @@
     "connectionUnavailable": "分享页暂不下发 VNC 凭据。服务端 Web 只读网关上线后将恢复访客连接入口。",
     "readonly": "只读",
     "reconnect": "重新连接",
+    "viewMode": "显示模式",
+    "viewActual": "1:1",
+    "viewFit": "适配",
     "vnc": {
       "connecting": "连接中…",
       "connected": "实时 · 只读",

@@ -147,6 +147,9 @@
     "connectionUnavailable": "Viewer pages no longer receive VNC credentials. Web read-only access will return after the server-side gateway is enabled.",
     "readonly": "Read-only",
     "reconnect": "Reconnect",
+    "viewMode": "view mode",
+    "viewActual": "1:1",
+    "viewFit": "Fit",
     "vnc": {
       "connecting": "connecting…",
       "connected": "live · read-only",

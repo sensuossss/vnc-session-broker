@@ -595,6 +595,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   gap: 12px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
 }
 
 .readonly-badge {
@@ -634,13 +635,45 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .vnc-status.is-dropped,
 .vnc-status.is-error { color: var(--red); }
 
+.vnc-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.vnc-view-toggle button {
+  appearance: none;
+  border: 0;
+  border-right: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.vnc-view-toggle button:last-child { border-right: 0; }
+
+.vnc-view-toggle button.is-active {
+  color: var(--cyan);
+  background: rgba(94, 200, 255, 0.12);
+}
+
 .vnc-screen {
   position: relative;
   width: 100%;
-  height: min(62vh, 720px);
+  height: min(78vh, 960px);
   background:
     repeating-linear-gradient(45deg, rgba(94, 200, 255, 0.03) 0 12px, transparent 12px 24px),
     #05080a;
+  overflow: auto;
+}
+
+.vnc-screen.is-fit {
+  height: min(62vh, 720px);
   overflow: hidden;
 }
 
